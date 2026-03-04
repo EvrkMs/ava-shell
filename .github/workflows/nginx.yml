@@ -234,6 +234,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export LOCAL_UID="$(id -u)"
+          export LOCAL_GID="$(id -g)"
           printf "dns_cloudflare_api_token = %s\n" "$CF_DNS_API_TOKEN" > certbot/.cloudflare.ini
           chmod 600 certbot/.cloudflare.ini
 
