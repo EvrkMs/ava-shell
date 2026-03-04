@@ -1,0 +1,214 @@
+name: Nginx CI
+
+on:
+  pull_request:
+    paths:
+      - "nginx/nginx.conf"
+      - "nginx/docker-compose.yml"
+      - "nginx/conf.d/**"
+      - "nginx/snippets/**"
+      - "nginx/certbot/**"
+      - ".github/workflows/nginx.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "nginx/nginx.conf"
+      - "nginx/docker-compose.yml"
+      - "nginx/conf.d/**"
+      - "nginx/snippets/**"
+      - "nginx/certbot/**"
+      - ".github/workflows/nginx.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: nginx-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nginx-ci:
+    name: Validate Nginx HTTPS
+    runs-on:
+      - self-hosted
+      - label-1
+      - ci-runner
+    env:
+      ROOT_DOMAIN: ${{ vars.ROOT_DOMAIN || vars['root-domain'] || 'ava-shell.ru' }}
+      COMPOSE_FILE: ${{ github.workspace }}/nginx/docker-compose.yml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p nginx/certs nginx/conf.d
+
+      - name: Generate temporary certificate for CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl req -x509 -nodes -newkey rsa:2048 -sha256 -days 2 \
+            -keyout nginx/certs/privkey.pem \
+            -out nginx/certs/fullchain.pem \
+            -subj "/CN=${ROOT_DOMAIN}" \
+            -addext "subjectAltName=DNS:${ROOT_DOMAIN},DNS:*.${ROOT_DOMAIN}"
+
+      - name: Generate CI server config
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > nginx/conf.d/00-ci-smoke.conf <<EOF
+          server {
+            listen 443 ssl;
+            listen [::]:443 ssl;
+            server_name ${ROOT_DOMAIN} auth.${ROOT_DOMAIN} admin.${ROOT_DOMAIN};
+
+            ssl_certificate /etc/nginx/certs/fullchain.pem;
+            ssl_certificate_key /etc/nginx/certs/privkey.pem;
+            ssl_protocols TLSv1.2 TLSv1.3;
+
+            location = /healthz {
+              default_type text/plain;
+              return 200 "ok\n";
+            }
+
+            location / {
+              default_type text/plain;
+              return 200 "nginx-ci\n";
+            }
+
+            # CI check: unavailable upstream should return 502, not crash nginx.
+            location = /upstream-down {
+              proxy_pass http://127.0.0.1:65535;
+            }
+          }
+          EOF
+
+      - name: Start nginx stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f "${COMPOSE_FILE}" up -d
+          docker compose -f "${COMPOSE_FILE}" ps
+
+      - name: Validate nginx config in container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f "${COMPOSE_FILE}" exec -T nginx nginx -t
+
+      - name: Capture container id before reload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cid_before="$(docker compose -f "${COMPOSE_FILE}" ps -q nginx)"
+          if [ -z "${cid_before}" ]; then
+            echo "Unable to detect nginx container id."
+            exit 1
+          fi
+          echo "NGINX_CID_BEFORE=${cid_before}" >> "${GITHUB_ENV}"
+
+      - name: HTTPS smoke checks (domain + subdomain)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error \
+            --resolve "${ROOT_DOMAIN}:443:127.0.0.1" \
+            --cacert nginx/certs/fullchain.pem \
+            "https://${ROOT_DOMAIN}/healthz"
+
+          curl --fail --silent --show-error \
+            --resolve "auth.${ROOT_DOMAIN}:443:127.0.0.1" \
+            --cacert nginx/certs/fullchain.pem \
+            "https://auth.${ROOT_DOMAIN}/healthz"
+
+      - name: Check HTTP to HTTPS redirect (80 -> 443)
+        shell: bash
+        run: |
+          set -euo pipefail
+          location="$(curl --silent --show-error --output /dev/null --write-out '%{redirect_url}' \
+            --resolve "${ROOT_DOMAIN}:80:127.0.0.1" \
+            "http://${ROOT_DOMAIN}/healthz")"
+
+          if [ "${location}" != "https://${ROOT_DOMAIN}/healthz" ]; then
+            echo "Expected redirect to https://${ROOT_DOMAIN}/healthz, got: ${location}"
+            exit 1
+          fi
+
+      - name: Check unavailable upstream returns 502
+        shell: bash
+        run: |
+          set -euo pipefail
+          status_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --resolve "${ROOT_DOMAIN}:443:127.0.0.1" \
+            --cacert nginx/certs/fullchain.pem \
+            "https://${ROOT_DOMAIN}/upstream-down")"
+
+          if [ "${status_code}" != "502" ]; then
+            echo "Expected status 502 for unavailable upstream, got ${status_code}"
+            exit 1
+          fi
+
+      - name: Check nginx is still running after 502 probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f "${COMPOSE_FILE}" ps
+          running_count="$(docker compose -f "${COMPOSE_FILE}" ps --status running --services | wc -l)"
+          if [ "${running_count}" -lt 1 ]; then
+            echo "Nginx container is not running after upstream-down probe."
+            exit 1
+          fi
+
+      - name: Reload nginx and verify no container restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f "${COMPOSE_FILE}" exec -T nginx nginx -s reload
+          sleep 1
+          cid_after="$(docker compose -f "${COMPOSE_FILE}" ps -q nginx)"
+          if [ -z "${cid_after}" ]; then
+            echo "Unable to detect nginx container id after reload."
+            exit 1
+          fi
+          if [ "${NGINX_CID_BEFORE}" != "${cid_after}" ]; then
+            echo "Container id changed after reload: ${NGINX_CID_BEFORE} -> ${cid_after}"
+            echo "Expected nginx reload without container restart."
+            exit 1
+          fi
+
+      - name: Show nginx logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 nginx || true
+
+      - name: Full cleanup
+        if: always()
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" down --remove-orphans --volumes || true
+          docker rm -f ava-shell-nginx || true
+
+  deploy-dev:
+    name: Deploy Nginx to Dev
+    needs: nginx-ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: dev
+    runs-on:
+      - self-hosted
+      - label-1
+      - dev-runner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy nginx stack
+        working-directory: nginx
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose up -d
+          docker compose ps
