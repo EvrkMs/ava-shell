@@ -108,7 +108,7 @@ jobs:
           fi
           echo "NGINX_CID_BEFORE=${cid_before}" >> "${GITHUB_ENV}"
 
-      - name: HTTPS smoke checks (domain + subdomain)
+      - name: HTTPS smoke check (base domain)
         shell: bash
         run: |
           set -euo pipefail
@@ -117,10 +117,19 @@ jobs:
             --cacert nginx/certs/fullchain.pem \
             "https://${ROOT_DOMAIN}/healthz"
 
-          curl --fail --silent --show-error \
+      - name: Auth domain returns 502 when backend is absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          status_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
             --resolve "auth.${ROOT_DOMAIN}:443:127.0.0.1" \
             --cacert nginx/certs/fullchain.pem \
-            "https://auth.${ROOT_DOMAIN}/healthz"
+            "https://auth.${ROOT_DOMAIN}/healthz")"
+
+          if [ "${status_code}" != "502" ]; then
+            echo "Expected 502 for auth domain without backend, got ${status_code}"
+            exit 1
+          fi
 
       - name: Check HTTP to HTTPS redirect (80 -> 443)
         shell: bash
