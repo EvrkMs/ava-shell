@@ -208,6 +208,7 @@ jobs:
       ROOT_DOMAIN: ${{ vars.ROOT_DOMAIN || vars['root-domain'] || 'ava-shell.ru' }}
       LETSENCRYPT_EMAIL: ${{ vars.LETSENCRYPT_EMAIL }}
       CF_DNS_API_TOKEN: ${{ secrets.CF_DNS_API_TOKEN }}
+      NGINX_STATE_DIR: ${{ vars.NGINX_STATE_DIR || '/home/evrk/ava-shell-state/nginx' }}
     runs-on:
       - label-dev
     steps:
@@ -227,7 +228,11 @@ jobs:
             echo "Missing variable: LETSENCRYPT_EMAIL (Environment: dev)"
             exit 1
           fi
-          mkdir -p certbot certs certbot/work certbot/logs
+          CERTBOT_STATE_DIR="${NGINX_STATE_DIR}/certbot"
+          NGINX_CERTS_DIR="${NGINX_STATE_DIR}/certs"
+          mkdir -p "${CERTBOT_STATE_DIR}" "${NGINX_CERTS_DIR}" "${CERTBOT_STATE_DIR}/work" "${CERTBOT_STATE_DIR}/logs"
+          echo "CERTBOT_STATE_DIR=${CERTBOT_STATE_DIR}" >> "${GITHUB_ENV}"
+          echo "NGINX_CERTS_DIR=${NGINX_CERTS_DIR}" >> "${GITHUB_ENV}"
 
       - name: Issue or renew certificate via certbot
         working-directory: nginx
@@ -236,15 +241,15 @@ jobs:
           set -euo pipefail
           export LOCAL_UID="$(id -u)"
           export LOCAL_GID="$(id -g)"
-          printf "dns_cloudflare_api_token = %s\n" "$CF_DNS_API_TOKEN" > certbot/.cloudflare.ini
-          chmod 600 certbot/.cloudflare.ini
+          printf "dns_cloudflare_api_token = %s\n" "$CF_DNS_API_TOKEN" > "${CERTBOT_STATE_DIR}/.cloudflare.ini"
+          chmod 600 "${CERTBOT_STATE_DIR}/.cloudflare.ini"
 
-          if [ -f "certbot/live/${ROOT_DOMAIN}/fullchain.pem" ] && [ -f "certbot/live/${ROOT_DOMAIN}/privkey.pem" ]; then
+          if [ -f "${CERTBOT_STATE_DIR}/live/${ROOT_DOMAIN}/fullchain.pem" ] && [ -f "${CERTBOT_STATE_DIR}/live/${ROOT_DOMAIN}/privkey.pem" ]; then
             echo "Existing cert found for ${ROOT_DOMAIN}. Running renew."
             docker compose --profile certbot run --rm certbot renew \
               --dns-cloudflare \
-              --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini \
               --dns-cloudflare-propagation-seconds 120 \
+              --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini \
               --config-dir /etc/letsencrypt \
               --work-dir /etc/letsencrypt/work \
               --logs-dir /etc/letsencrypt/logs
@@ -252,6 +257,7 @@ jobs:
             echo "No cert found for ${ROOT_DOMAIN}. Issuing new certificate."
             docker compose --profile certbot run --rm certbot certonly \
               --dns-cloudflare \
+              --dns-cloudflare-propagation-seconds 30 \
               --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini \
               --config-dir /etc/letsencrypt \
               --work-dir /etc/letsencrypt/work \
@@ -268,12 +274,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD/certbot:/etc/letsencrypt:ro" alpine:3.20 \
-            sh -c "cat /etc/letsencrypt/live/${ROOT_DOMAIN}/fullchain.pem" > certs/fullchain.pem
-          docker run --rm -v "$PWD/certbot:/etc/letsencrypt:ro" alpine:3.20 \
-            sh -c "cat /etc/letsencrypt/live/${ROOT_DOMAIN}/privkey.pem" > certs/privkey.pem
-          chmod 600 certs/privkey.pem
-          chmod 644 certs/fullchain.pem
+          cp "${CERTBOT_STATE_DIR}/live/${ROOT_DOMAIN}/fullchain.pem" "${NGINX_CERTS_DIR}/fullchain.pem"
+          cp "${CERTBOT_STATE_DIR}/live/${ROOT_DOMAIN}/privkey.pem" "${NGINX_CERTS_DIR}/privkey.pem"
+          chmod 600 "${NGINX_CERTS_DIR}/privkey.pem"
+          chmod 644 "${NGINX_CERTS_DIR}/fullchain.pem"
 
       - name: Deploy nginx stack
         working-directory: nginx
@@ -297,4 +301,4 @@ jobs:
         if: always()
         working-directory: nginx
         shell: bash
-        run: rm -f certbot/.cloudflare.ini
+        run: rm -f "${CERTBOT_STATE_DIR}/.cloudflare.ini"
