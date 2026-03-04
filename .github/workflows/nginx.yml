@@ -29,8 +29,6 @@ jobs:
   nginx-ci:
     name: Validate Nginx HTTPS
     runs-on:
-      - self-hosted
-      - label-1
       - ci-runner
     env:
       ROOT_DOMAIN: ${{ vars.ROOT_DOMAIN || vars['root-domain'] || 'ava-shell.ru' }}
@@ -198,8 +196,6 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: dev
     runs-on:
-      - self-hosted
-      - label-1
       - dev-runner
     steps:
       - name: Checkout
