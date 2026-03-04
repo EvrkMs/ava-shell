@@ -204,11 +204,67 @@ jobs:
     needs: nginx-ci
     if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     environment: dev
+    env:
+      ROOT_DOMAIN: ${{ vars.ROOT_DOMAIN || vars['root-domain'] || 'ava-shell.ru' }}
+      LETSENCRYPT_EMAIL: ${{ vars.LETSENCRYPT_EMAIL }}
+      CF_DNS_API_TOKEN: ${{ secrets.CF_DNS_API_TOKEN }}
     runs-on:
       - label-dev
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate deploy env
+        working-directory: nginx
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CF_DNS_API_TOKEN:-}" ]; then
+            echo "Missing secret: CF_DNS_API_TOKEN (Environment: dev)"
+            exit 1
+          fi
+          if [ -z "${LETSENCRYPT_EMAIL:-}" ]; then
+            echo "Missing variable: LETSENCRYPT_EMAIL (Environment: dev)"
+            exit 1
+          fi
+          mkdir -p certbot certs
+
+      - name: Issue or renew certificate via certbot
+        working-directory: nginx
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf "dns_cloudflare_api_token = %s\n" "$CF_DNS_API_TOKEN" > certbot/.cloudflare.ini
+          chmod 600 certbot/.cloudflare.ini
+
+          if [ -f "certbot/live/${ROOT_DOMAIN}/fullchain.pem" ] && [ -f "certbot/live/${ROOT_DOMAIN}/privkey.pem" ]; then
+            echo "Existing cert found for ${ROOT_DOMAIN}. Running renew."
+            docker compose --profile certbot run --rm certbot renew \
+              --dns-cloudflare \
+              --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini
+          else
+            echo "No cert found for ${ROOT_DOMAIN}. Issuing new certificate."
+            docker compose --profile certbot run --rm certbot certonly \
+              --dns-cloudflare \
+              --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini \
+              --email "${LETSENCRYPT_EMAIL}" \
+              --agree-tos \
+              --no-eff-email \
+              -d "${ROOT_DOMAIN}" \
+              -d "*.${ROOT_DOMAIN}"
+          fi
+
+      - name: Sync certificate files for nginx
+        working-directory: nginx
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/certbot:/etc/letsencrypt:ro" alpine:3.20 \
+            sh -c "cat /etc/letsencrypt/live/${ROOT_DOMAIN}/fullchain.pem" > certs/fullchain.pem
+          docker run --rm -v "$PWD/certbot:/etc/letsencrypt:ro" alpine:3.20 \
+            sh -c "cat /etc/letsencrypt/live/${ROOT_DOMAIN}/privkey.pem" > certs/privkey.pem
+          chmod 600 certs/privkey.pem
+          chmod 644 certs/fullchain.pem
 
       - name: Deploy nginx stack
         working-directory: nginx
@@ -216,4 +272,12 @@ jobs:
         run: |
           set -euo pipefail
           docker compose up -d
+          docker exec ava-shell-nginx nginx -t
+          docker exec ava-shell-nginx nginx -s reload
           docker compose ps
+
+      - name: Cleanup certbot credentials
+        if: always()
+        working-directory: nginx
+        shell: bash
+        run: rm -f certbot/.cloudflare.ini
