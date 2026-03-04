@@ -35,7 +35,7 @@ jobs:
       COMPOSE_FILE: ${{ github.workspace }}/nginx/docker-compose.yml
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Prepare folders
         shell: bash
@@ -193,13 +193,13 @@ jobs:
   deploy-dev:
     name: Deploy Nginx to Dev
     needs: nginx-ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     environment: dev
     runs-on:
       - label-dev
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Deploy nginx stack
         working-directory: nginx
