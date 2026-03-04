@@ -11,7 +11,7 @@ on:
       - ".github/workflows/nginx.yml"
   push:
     branches:
-      - main
+      - master
     paths:
       - "nginx/nginx.conf"
       - "nginx/docker-compose.yml"
