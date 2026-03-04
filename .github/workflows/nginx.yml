@@ -203,7 +203,7 @@ jobs:
     name: Deploy Nginx to Dev
     needs: nginx-ci
     if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
-    environment: dev
+    environment: dev-shell
     env:
       ROOT_DOMAIN: ${{ vars.ROOT_DOMAIN || vars['root-domain'] || 'ava-shell.ru' }}
       LETSENCRYPT_EMAIL: ${{ vars.LETSENCRYPT_EMAIL }}
