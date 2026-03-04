@@ -88,7 +88,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker compose -f "${COMPOSE_FILE}" up -d
+          docker compose -f "${COMPOSE_FILE}" up -d --force-recreate
           docker compose -f "${COMPOSE_FILE}" ps
 
       - name: Validate nginx config in container
@@ -244,7 +244,7 @@ jobs:
             docker compose --profile certbot run --rm certbot renew \
               --dns-cloudflare \
               --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini \
-              --dns-cloudflare-propagation-seconds 120
+              --dns-cloudflare-propagation-seconds 120 \
               --config-dir /etc/letsencrypt \
               --work-dir /etc/letsencrypt/work \
               --logs-dir /etc/letsencrypt/logs
@@ -281,8 +281,16 @@ jobs:
         run: |
           set -euo pipefail
           docker compose up -d
-          docker exec ava-shell-nginx nginx -t
-          docker exec ava-shell-nginx nginx -s reload
+
+          # Prefer graceful config apply first.
+          if docker exec ava-shell-nginx nginx -t && docker exec ava-shell-nginx nginx -s reload; then
+            echo "Graceful reload succeeded."
+          else
+            echo "Reload path failed. Falling back to force recreate."
+            docker compose up -d --force-recreate
+            docker exec ava-shell-nginx nginx -t
+          fi
+
           docker compose ps
 
       - name: Cleanup certbot credentials
