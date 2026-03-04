@@ -35,7 +35,7 @@ jobs:
       COMPOSE_FILE: ${{ github.workspace }}/nginx/docker-compose.yml
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Prepare folders
         shell: bash
@@ -199,7 +199,7 @@ jobs:
       - dev-runner
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Deploy nginx stack
         working-directory: nginx
