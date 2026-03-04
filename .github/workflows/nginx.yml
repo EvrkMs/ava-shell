@@ -227,7 +227,7 @@ jobs:
             echo "Missing variable: LETSENCRYPT_EMAIL (Environment: dev)"
             exit 1
           fi
-          mkdir -p certbot certs
+          mkdir -p certbot certs certbot/work certbot/logs
 
       - name: Issue or renew certificate via certbot
         working-directory: nginx
@@ -243,12 +243,18 @@ jobs:
             echo "Existing cert found for ${ROOT_DOMAIN}. Running renew."
             docker compose --profile certbot run --rm certbot renew \
               --dns-cloudflare \
-              --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini
+              --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini \
+              --config-dir /etc/letsencrypt \
+              --work-dir /etc/letsencrypt/work \
+              --logs-dir /etc/letsencrypt/logs
           else
             echo "No cert found for ${ROOT_DOMAIN}. Issuing new certificate."
             docker compose --profile certbot run --rm certbot certonly \
               --dns-cloudflare \
               --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini \
+              --config-dir /etc/letsencrypt \
+              --work-dir /etc/letsencrypt/work \
+              --logs-dir /etc/letsencrypt/logs \
               --email "${LETSENCRYPT_EMAIL}" \
               --agree-tos \
               --no-eff-email \
