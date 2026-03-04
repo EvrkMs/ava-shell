@@ -244,6 +244,7 @@ jobs:
             docker compose --profile certbot run --rm certbot renew \
               --dns-cloudflare \
               --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini \
+              --dns-cloudflare-propagation-seconds 120
               --config-dir /etc/letsencrypt \
               --work-dir /etc/letsencrypt/work \
               --logs-dir /etc/letsencrypt/logs
