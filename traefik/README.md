@@ -14,8 +14,8 @@ If that backend is unavailable, Traefik should return `502/503` and stay alive.
 
 Route templates are stored in:
 
-- `traefik/dynamic/routes.ci.yml`
-- `traefik/dynamic/routes.deploy.yml`
+- `traefik/templates/routes.ci.yml`
+- `traefik/templates/routes.deploy.yml`
 
 Workflows replace `__ROOT_DOMAIN__` and write:
 
@@ -38,4 +38,3 @@ docker compose up -d
 docker compose ps
 docker logs ava-shell-edge --tail 100
 ```
-

@@ -5,6 +5,7 @@ on:
     paths:
       - "traefik/docker-compose.yml"
       - "traefik/dynamic/**"
+      - "traefik/templates/**"
       - ".github/workflows/traefik.yml"
   push:
     branches:
@@ -12,6 +13,7 @@ on:
     paths:
       - "traefik/docker-compose.yml"
       - "traefik/dynamic/**"
+      - "traefik/templates/**"
       - ".github/workflows/traefik.yml"
   workflow_dispatch:
 
@@ -37,7 +39,7 @@ jobs:
           set -euo pipefail
           mkdir -p traefik/dynamic
           sed "s/__ROOT_DOMAIN__/${ROOT_DOMAIN}/g" \
-            traefik/dynamic/routes.ci.yml > traefik/dynamic/routes.generated.yml
+            traefik/templates/routes.ci.yml > traefik/dynamic/routes.generated.yml
 
       - name: Start edge stack
         shell: bash
@@ -150,6 +152,7 @@ jobs:
             exit 1
           fi
           mkdir -p dynamic
+          rm -f dynamic/routes.generated.yml
 
       - name: Generate deploy routes from template
         working-directory: traefik
@@ -157,7 +160,7 @@ jobs:
         run: |
           set -euo pipefail
           sed "s/__ROOT_DOMAIN__/${ROOT_DOMAIN}/g" \
-            dynamic/routes.deploy.yml > dynamic/routes.generated.yml
+            templates/routes.deploy.yml > dynamic/routes.generated.yml
 
       - name: Ensure ACME storage exists
         shell: bash
