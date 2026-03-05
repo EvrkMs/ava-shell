@@ -53,6 +53,20 @@ jobs:
             -subj "/CN=${ROOT_DOMAIN}" \
             -addext "subjectAltName=DNS:${ROOT_DOMAIN},DNS:*.${ROOT_DOMAIN}"
 
+      - name: Seed certs into nginx named volume for CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker volume create ava_shell_nginx_certs >/dev/null
+          docker run --rm \
+            -v ava_shell_nginx_certs:/target \
+            -v "$PWD/nginx/certs:/source:ro" \
+            alpine:3.20 \
+            sh -c "cp /source/fullchain.pem /target/fullchain.pem && \
+                   cp /source/privkey.pem /target/privkey.pem && \
+                   chmod 600 /target/privkey.pem && \
+                   chmod 644 /target/fullchain.pem"
+
       - name: Generate CI server config
         shell: bash
         run: |
