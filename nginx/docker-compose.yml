@@ -15,7 +15,6 @@ services:
   certbot:
     image: certbot/dns-cloudflare:latest
     container_name: ava-shell-certbot
-    user: "${LOCAL_UID:-0}:${LOCAL_GID:-0}"
     profiles:
       - certbot
     volumes:
