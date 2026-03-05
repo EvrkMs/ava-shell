@@ -15,6 +15,7 @@ services:
       - --providers.file.watch=true
       - --entryPoints.web.address=:80
       - --entryPoints.websecure.address=:443
+      - --entryPoints.websecure.http.tls=true
       - --entryPoints.web.http.redirections.entryPoint.to=websecure
       - --entryPoints.web.http.redirections.entryPoint.scheme=https
       - --certificatesresolvers.cloudflare.acme.email=${LETSENCRYPT_EMAIL:-ops@ava-shell.ru}

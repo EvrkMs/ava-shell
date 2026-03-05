@@ -67,6 +67,21 @@ jobs:
           docker compose -f "${COMPOSE_FILE}" up -d --force-recreate
           docker compose -f "${COMPOSE_FILE}" ps
 
+      - name: Wait for edge HTTPS port
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            if curl --silent --show-error -k \
+              --resolve "${ROOT_DOMAIN}:443:127.0.0.1" \
+              "https://${ROOT_DOMAIN}/" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Traefik HTTPS endpoint did not become ready in time."
+          exit 1
+
       - name: HTTPS smoke check (root domain)
         shell: bash
         run: |
