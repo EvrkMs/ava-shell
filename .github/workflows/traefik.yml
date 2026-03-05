@@ -6,6 +6,7 @@ on:
       - "traefik/docker-compose.yml"
       - "traefik/dynamic/**"
       - "traefik/templates/**"
+      - "scripts/edge/**"
       - ".github/workflows/traefik.yml"
   push:
     branches:
@@ -14,6 +15,7 @@ on:
       - "traefik/docker-compose.yml"
       - "traefik/dynamic/**"
       - "traefik/templates/**"
+      - "scripts/edge/**"
       - ".github/workflows/traefik.yml"
   workflow_dispatch:
 
@@ -34,82 +36,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Generate CI routes from template
+      - name: Render CI routes
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p traefik/dynamic
-          sed "s/__ROOT_DOMAIN__/${ROOT_DOMAIN}/g" \
-            traefik/templates/routes.ci.yml > traefik/dynamic/routes.generated.yml
+          bash scripts/edge/render-routes.sh \
+            traefik/templates/routes.ci.yml \
+            traefik/dynamic/routes.generated.yml \
+            "${ROOT_DOMAIN}"
 
       - name: Start edge stack
         shell: bash
         run: |
           set -euo pipefail
           docker compose -f "${COMPOSE_FILE}" up -d --force-recreate
-          docker compose -f "${COMPOSE_FILE}" ps
+          bash scripts/edge/check-compose-running.sh "${COMPOSE_FILE}"
 
       - name: Wait for edge HTTPS port
         shell: bash
         run: |
-          set -euo pipefail
-          for i in $(seq 1 30); do
-            if curl --silent --show-error -k \
-              --resolve "${ROOT_DOMAIN}:443:127.0.0.1" \
-              "https://${ROOT_DOMAIN}/" >/dev/null 2>&1; then
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "Traefik HTTPS endpoint did not become ready in time."
-          exit 1
+          bash scripts/edge/wait-https.sh "${ROOT_DOMAIN}"
 
       - name: HTTPS smoke check (root domain)
         shell: bash
         run: |
-          set -euo pipefail
-          body="$(curl --silent --show-error --fail -k \
-            --resolve "${ROOT_DOMAIN}:443:127.0.0.1" \
-            "https://${ROOT_DOMAIN}/" | tr -d '\r\n')"
-          if [ "${body}" != "true" ]; then
-            echo "Expected root response 'true', got: ${body}"
-            exit 1
-          fi
+          bash scripts/edge/check-root-response.sh "${ROOT_DOMAIN}"
 
       - name: Unavailable auth backend returns 502/503 (edge stays alive)
         shell: bash
         run: |
-          set -euo pipefail
-          status_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' -k \
-            --resolve "auth.${ROOT_DOMAIN}:443:127.0.0.1" \
-            "https://auth.${ROOT_DOMAIN}/")"
-          case "${status_code}" in
-            502|503) echo "Expected backend failure status: ${status_code}" ;;
-            *) echo "Expected 502/503 for unavailable auth backend, got ${status_code}"; exit 1 ;;
-          esac
+          bash scripts/edge/check-auth-unavailable.sh "${ROOT_DOMAIN}"
 
       - name: Check HTTP to HTTPS redirect (80 -> 443)
         shell: bash
         run: |
-          set -euo pipefail
-          location="$(curl --silent --show-error --output /dev/null --write-out '%{redirect_url}' \
-            --resolve "${ROOT_DOMAIN}:80:127.0.0.1" \
-            "http://${ROOT_DOMAIN}/")"
-          if [ "${location}" != "https://${ROOT_DOMAIN}/" ]; then
-            echo "Expected redirect to https://${ROOT_DOMAIN}/, got: ${location}"
-            exit 1
-          fi
+          bash scripts/edge/check-http-redirect.sh "${ROOT_DOMAIN}"
 
       - name: Ensure edge container is still running
         shell: bash
         run: |
-          set -euo pipefail
-          docker compose -f "${COMPOSE_FILE}" ps
-          running_count="$(docker compose -f "${COMPOSE_FILE}" ps --status running --services | wc -l)"
-          if [ "${running_count}" -lt 1 ]; then
-            echo "Traefik edge is not running."
-            exit 1
-          fi
+          bash scripts/edge/check-compose-running.sh "${COMPOSE_FILE}"
 
       - name: Show edge logs on failure
         if: failure()
@@ -132,6 +98,7 @@ jobs:
       ROOT_DOMAIN: ${{ vars.ROOT_DOMAIN || vars['root-domain'] || 'ava-shell.ru' }}
       LETSENCRYPT_EMAIL: ${{ vars.LETSENCRYPT_EMAIL }}
       CF_DNS_API_TOKEN: ${{ secrets.CF_DNS_API_TOKEN }}
+      COMPOSE_FILE: ${{ github.workspace }}/traefik/docker-compose.yml
       COMPOSE_PROJECT_NAME: ava_shell_edge
     runs-on:
       - label-dev
@@ -140,81 +107,45 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate deploy env
-        working-directory: traefik
         shell: bash
         run: |
-          set -euo pipefail
-          if [ -z "${CF_DNS_API_TOKEN:-}" ]; then
-            echo "Missing secret: CF_DNS_API_TOKEN (Environment: dev-shell)"
-            exit 1
-          fi
-          if [ -z "${LETSENCRYPT_EMAIL:-}" ]; then
-            echo "Missing variable: LETSENCRYPT_EMAIL (Environment: dev-shell)"
-            exit 1
-          fi
-          mkdir -p dynamic
-          rm -f dynamic/routes.generated.yml
+          bash scripts/edge/validate-deploy-env.sh
 
-      - name: Generate deploy routes from template
-        working-directory: traefik
+      - name: Render deploy routes
         shell: bash
         run: |
-          set -euo pipefail
-          sed "s/__ROOT_DOMAIN__/${ROOT_DOMAIN}/g" \
-            templates/routes.deploy.yml > dynamic/routes.generated.yml
+          bash scripts/edge/render-routes.sh \
+            traefik/templates/routes.deploy.yml \
+            traefik/dynamic/routes.generated.yml \
+            "${ROOT_DOMAIN}"
 
       - name: Ensure ACME storage exists
         shell: bash
         run: |
-          set -euo pipefail
-          docker volume create ava_shell_traefik_acme >/dev/null
-          docker run --rm -v ava_shell_traefik_acme:/acme alpine:3.20 \
-            sh -c "touch /acme/acme.json && chmod 600 /acme/acme.json"
+          bash scripts/edge/ensure-acme-storage.sh ava_shell_traefik_acme
 
       - name: Deploy edge stack
-        working-directory: traefik
         shell: bash
         run: |
-          set -euo pipefail
-          # Prefer soft update: Traefik watches dynamic config and reloads routes automatically.
-          if docker compose up -d; then
-            echo "Soft deploy succeeded."
-          else
-            echo "Soft deploy failed. Fallback to conflict recovery + force recreate."
-            docker compose down --remove-orphans || true
-            docker rm -f ava-shell-edge ava-shell-root-echo || true
-            docker compose up -d --force-recreate
-          fi
-          docker compose ps
+          bash scripts/edge/deploy-compose.sh "${COMPOSE_FILE}"
+
+      - name: Wait for HTTPS
+        shell: bash
+        run: |
+          bash scripts/edge/wait-https.sh "${ROOT_DOMAIN}"
 
       - name: Post-deploy check (root endpoint)
         shell: bash
         run: |
-          set -euo pipefail
-          ok=0
-          for i in $(seq 1 30); do
-            body="$(curl --silent --show-error -k \
-              --resolve "${ROOT_DOMAIN}:443:127.0.0.1" \
-              "https://${ROOT_DOMAIN}/" | tr -d '\r\n' || true)"
-            if [ "${body}" = "true" ]; then
-              ok=1
-              break
-            fi
-            sleep 2
-          done
-          if [ "${ok}" -ne 1 ]; then
-            echo "Root endpoint did not become healthy in time."
-            exit 1
-          fi
+          bash scripts/edge/check-root-response.sh "${ROOT_DOMAIN}"
 
       - name: Post-deploy check (auth backend unavailable -> 502/503)
         shell: bash
         run: |
-          set -euo pipefail
-          status_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' -k \
-            --resolve "auth.${ROOT_DOMAIN}:443:127.0.0.1" \
-            "https://auth.${ROOT_DOMAIN}/")"
-          case "${status_code}" in
-            502|503) echo "Expected status for unavailable auth backend: ${status_code}" ;;
-            *) echo "Expected 502/503, got ${status_code}"; exit 1 ;;
-          esac
+          bash scripts/edge/check-auth-unavailable.sh "${ROOT_DOMAIN}"
+
+      - name: Show edge logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 edge || true

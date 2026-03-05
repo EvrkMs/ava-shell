@@ -21,6 +21,14 @@ Workflows replace `__ROOT_DOMAIN__` and write:
 
 - `traefik/dynamic/routes.generated.yml`
 
+## CI/CD Scripts
+
+Operational shell logic is kept in:
+
+- `scripts/edge/*.sh`
+
+Workflow `.github/workflows/traefik.yml` only orchestrates these scripts.
+
 ## Volumes
 
 - `ava_shell_traefik_acme` - ACME storage (`acme.json`)
