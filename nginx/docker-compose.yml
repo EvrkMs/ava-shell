@@ -10,7 +10,7 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./conf.d:/etc/nginx/conf.d:ro
       - ./snippets:/etc/nginx/snippets:ro
-      - ${NGINX_CERTS_DIR:-./certs}:/etc/nginx/certs:ro
+      - ava_shell_nginx_certs:/etc/nginx/certs:ro
 
   certbot:
     image: certbot/dns-cloudflare:latest
@@ -19,4 +19,12 @@ services:
     profiles:
       - certbot
     volumes:
-      - ${CERTBOT_STATE_DIR:-./certbot}:/etc/letsencrypt
+      - ava_shell_certbot_state:/etc/letsencrypt
+      - ava_shell_nginx_certs:/etc/nginx/certs
+      - ./runtime:/runtime
+
+volumes:
+  ava_shell_nginx_certs:
+    name: ava_shell_nginx_certs
+  ava_shell_certbot_state:
+    name: ava_shell_certbot_state

@@ -17,8 +17,8 @@ Current examples:
 
 Put certificates here:
 
-- `${NGINX_CERTS_DIR:-./certs}/fullchain.pem`
-- `${NGINX_CERTS_DIR:-./certs}/privkey.pem`
+- `ava_shell_nginx_certs:/etc/nginx/certs/fullchain.pem`
+- `ava_shell_nginx_certs:/etc/nginx/certs/privkey.pem`
 
 `nginx` will fail to start if these files are missing.
 
@@ -33,25 +33,23 @@ HTTP on port `80` is redirected to HTTPS (`443`) by `conf.d/00-http-redirect.con
 
 ## Certbot (Cloudflare DNS-01)
 
-For self-hosted runner/CD use persistent state directories (outside runner `_work`), for example:
+State is persisted in fixed Docker named volumes:
+
+- `ava_shell_certbot_state` -> `/etc/letsencrypt`
+- `ava_shell_nginx_certs` -> `/etc/nginx/certs`
+
+List volumes:
 
 ```bash
-export NGINX_STATE_DIR=/home/evrk/ava-shell-state/nginx
-export CERTBOT_STATE_DIR="${NGINX_STATE_DIR}/certbot"
-export NGINX_CERTS_DIR="${NGINX_STATE_DIR}/certs"
-mkdir -p "$CERTBOT_STATE_DIR" "$NGINX_CERTS_DIR" "$CERTBOT_STATE_DIR/work" "$CERTBOT_STATE_DIR/logs"
+docker volume ls | grep ava_shell
 ```
 
-`docker-compose.yml` supports these env vars:
-
-- `CERTBOT_STATE_DIR` -> mounted to `/etc/letsencrypt`
-- `NGINX_CERTS_DIR` -> mounted to `/etc/nginx/certs`
-
-Create a temporary credentials file from `CF_DNS_API_TOKEN`:
+Create temporary Cloudflare credentials:
 
 ```bash
-printf "dns_cloudflare_api_token = %s\n" "$CF_DNS_API_TOKEN" > "${CERTBOT_STATE_DIR}/.cloudflare.ini"
-chmod 600 "${CERTBOT_STATE_DIR}/.cloudflare.ini"
+mkdir -p runtime
+printf "dns_cloudflare_api_token = %s\n" "$CF_DNS_API_TOKEN" > runtime/.cloudflare.ini
+chmod 600 runtime/.cloudflare.ini
 ```
 
 Issue certificate (example for `ava-shell.ru`):
@@ -59,7 +57,7 @@ Issue certificate (example for `ava-shell.ru`):
 ```bash
 docker compose --profile certbot run --rm certbot certonly \
   --dns-cloudflare \
-  --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini \
+  --dns-cloudflare-credentials /runtime/.cloudflare.ini \
   --email you@example.com \
   --agree-tos \
   --no-eff-email \
@@ -72,14 +70,14 @@ Renew certificates:
 ```bash
 docker compose --profile certbot run --rm certbot renew \
   --dns-cloudflare \
-  --dns-cloudflare-credentials /etc/letsencrypt/.cloudflare.ini
+  --dns-cloudflare-credentials /runtime/.cloudflare.ini
 ```
 
-After issue/renew, copy certs from `${CERTBOT_STATE_DIR}/live/<domain>/` into `${NGINX_CERTS_DIR}/` and reload nginx.
+After issue/renew, copy certs from `/etc/letsencrypt/live/<domain>/` into `/etc/nginx/certs/` and reload nginx.
 Then remove temporary credentials file:
 
 ```bash
-rm -f "${CERTBOT_STATE_DIR}/.cloudflare.ini"
+rm -f runtime/.cloudflare.ini
 ```
 
 ## Reload config
