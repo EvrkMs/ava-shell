@@ -1,35 +1,29 @@
-name: Nginx CI
+name: Edge CI/CD (Traefik)
 
 on:
   pull_request:
     paths:
-      - "nginx/nginx.conf"
       - "nginx/docker-compose.yml"
-      - "nginx/conf.d/**"
-      - "nginx/snippets/**"
-      - "nginx/certbot/**"
+      - "nginx/traefik/**"
       - ".github/workflows/nginx.yml"
   push:
     branches:
       - master
     paths:
-      - "nginx/nginx.conf"
       - "nginx/docker-compose.yml"
-      - "nginx/conf.d/**"
-      - "nginx/snippets/**"
-      - "nginx/certbot/**"
+      - "nginx/traefik/**"
       - ".github/workflows/nginx.yml"
   workflow_dispatch:
 
 concurrency:
-  group: nginx-ci-${{ github.ref }}
+  group: edge-traefik-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  nginx-ci:
-    name: Validate Nginx HTTPS
+  edge-ci:
+    name: Validate Traefik Edge
     runs-on:
-      -  label-ci
+      - label-ci
     env:
       ROOT_DOMAIN: ${{ vars.ROOT_DOMAIN || vars['root-domain'] || 'ava-shell.ru' }}
       COMPOSE_FILE: ${{ github.workspace }}/nginx/docker-compose.yml
@@ -37,113 +31,80 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare folders
+      - name: Generate CI dynamic routes
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p nginx/certs nginx/conf.d
-
-      - name: Generate temporary certificate for CI
-        shell: bash
-        run: |
-          set -euo pipefail
-          openssl req -x509 -nodes -newkey rsa:2048 -sha256 -days 2 \
-            -keyout nginx/certs/privkey.pem \
-            -out nginx/certs/fullchain.pem \
-            -subj "/CN=${ROOT_DOMAIN}" \
-            -addext "subjectAltName=DNS:${ROOT_DOMAIN},DNS:*.${ROOT_DOMAIN}"
-
-      - name: Seed certs into nginx named volume for CI
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker volume create ava_shell_nginx_certs >/dev/null
-          docker run --rm \
-            -v ava_shell_nginx_certs:/target \
-            -v "$PWD/nginx/certs:/source:ro" \
-            alpine:3.20 \
-            sh -c "cp /source/fullchain.pem /target/fullchain.pem && \
-                   cp /source/privkey.pem /target/privkey.pem && \
-                   chmod 600 /target/privkey.pem && \
-                   chmod 644 /target/fullchain.pem"
-
-      - name: Generate CI server config
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > nginx/conf.d/00-ci-smoke.conf <<EOF
-          server {
-            listen 443 ssl;
-            listen [::]:443 ssl;
-            server_name ${ROOT_DOMAIN} auth.${ROOT_DOMAIN} admin.${ROOT_DOMAIN};
-
-            ssl_certificate /etc/nginx/certs/fullchain.pem;
-            ssl_certificate_key /etc/nginx/certs/privkey.pem;
-            ssl_protocols TLSv1.2 TLSv1.3;
-
-            location = /healthz {
-              default_type text/plain;
-              return 200 "ok\n";
-            }
-
-            location / {
-              default_type text/plain;
-              return 200 "nginx-ci\n";
-            }
-
-            # CI check: unavailable upstream should return 502, not crash nginx.
-            location = /upstream-down {
-              proxy_pass http://127.0.0.1:65535;
-            }
-          }
+          mkdir -p nginx/traefik/dynamic
+          cat > nginx/traefik/dynamic/routes.generated.yml <<EOF
+          http:
+            routers:
+              root-router:
+                entryPoints: ["websecure"]
+                rule: "Host(\`${ROOT_DOMAIN}\`)"
+                service: root-service
+                tls: {}
+              auth-router:
+                entryPoints: ["websecure"]
+                rule: "Host(\`auth.${ROOT_DOMAIN}\`)"
+                service: auth-service
+                tls: {}
+            services:
+              root-service:
+                loadBalancer:
+                  servers:
+                    - url: "http://root-echo:5678"
+              auth-service:
+                loadBalancer:
+                  servers:
+                    - url: "http://auth-admin:5000"
           EOF
 
-      - name: Start nginx stack
+      - name: Start edge stack
         shell: bash
         run: |
           set -euo pipefail
           docker compose -f "${COMPOSE_FILE}" up -d --force-recreate
           docker compose -f "${COMPOSE_FILE}" ps
 
-      - name: Validate nginx config in container
+      - name: Wait for edge HTTPS port
         shell: bash
         run: |
           set -euo pipefail
-          docker compose -f "${COMPOSE_FILE}" exec -T nginx nginx -t
+          for i in $(seq 1 30); do
+            if curl --silent --show-error -k \
+              --resolve "${ROOT_DOMAIN}:443:127.0.0.1" \
+              "https://${ROOT_DOMAIN}/" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Traefik HTTPS endpoint did not become ready in time."
+          exit 1
 
-      - name: Capture container id before reload
+      - name: HTTPS smoke check (root domain)
         shell: bash
         run: |
           set -euo pipefail
-          cid_before="$(docker compose -f "${COMPOSE_FILE}" ps -q nginx)"
-          if [ -z "${cid_before}" ]; then
-            echo "Unable to detect nginx container id."
-            exit 1
-          fi
-          echo "NGINX_CID_BEFORE=${cid_before}" >> "${GITHUB_ENV}"
-
-      - name: HTTPS smoke check (base domain)
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error \
+          body="$(curl --silent --show-error --fail -k \
             --resolve "${ROOT_DOMAIN}:443:127.0.0.1" \
-            --cacert nginx/certs/fullchain.pem \
-            "https://${ROOT_DOMAIN}/healthz"
+            "https://${ROOT_DOMAIN}/" | tr -d '\r\n')"
+          if [ "${body}" != "true" ]; then
+            echo "Expected root response 'true', got: ${body}"
+            exit 1
+          fi
 
-      - name: Auth domain returns 502 when backend is absent
+      - name: Unavailable auth backend returns 502/503 (edge stays alive)
         shell: bash
         run: |
           set -euo pipefail
-          status_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+          status_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' -k \
             --resolve "auth.${ROOT_DOMAIN}:443:127.0.0.1" \
-            --cacert nginx/certs/fullchain.pem \
-            "https://auth.${ROOT_DOMAIN}/healthz")"
-
-          if [ "${status_code}" != "502" ]; then
-            echo "Expected 502 for auth domain without backend, got ${status_code}"
-            exit 1
-          fi
+            "https://auth.${ROOT_DOMAIN}/")"
+          case "${status_code}" in
+            502|503) echo "Expected backend failure status: ${status_code}" ;;
+            *) echo "Expected 502/503 for unavailable auth backend, got ${status_code}"; exit 1 ;;
+          esac
 
       - name: Check HTTP to HTTPS redirect (80 -> 443)
         shell: bash
@@ -151,71 +112,39 @@ jobs:
           set -euo pipefail
           location="$(curl --silent --show-error --output /dev/null --write-out '%{redirect_url}' \
             --resolve "${ROOT_DOMAIN}:80:127.0.0.1" \
-            "http://${ROOT_DOMAIN}/healthz")"
-
-          if [ "${location}" != "https://${ROOT_DOMAIN}/healthz" ]; then
-            echo "Expected redirect to https://${ROOT_DOMAIN}/healthz, got: ${location}"
+            "http://${ROOT_DOMAIN}/")"
+          if [ "${location}" != "https://${ROOT_DOMAIN}/" ]; then
+            echo "Expected redirect to https://${ROOT_DOMAIN}/, got: ${location}"
             exit 1
           fi
 
-      - name: Check unavailable upstream returns 502
-        shell: bash
-        run: |
-          set -euo pipefail
-          status_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-            --resolve "${ROOT_DOMAIN}:443:127.0.0.1" \
-            --cacert nginx/certs/fullchain.pem \
-            "https://${ROOT_DOMAIN}/upstream-down")"
-
-          if [ "${status_code}" != "502" ]; then
-            echo "Expected status 502 for unavailable upstream, got ${status_code}"
-            exit 1
-          fi
-
-      - name: Check nginx is still running after 502 probe
+      - name: Ensure edge container is still running
         shell: bash
         run: |
           set -euo pipefail
           docker compose -f "${COMPOSE_FILE}" ps
           running_count="$(docker compose -f "${COMPOSE_FILE}" ps --status running --services | wc -l)"
           if [ "${running_count}" -lt 1 ]; then
-            echo "Nginx container is not running after upstream-down probe."
+            echo "Traefik edge is not running."
             exit 1
           fi
 
-      - name: Reload nginx and verify no container restart
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker compose -f "${COMPOSE_FILE}" exec -T nginx nginx -s reload
-          sleep 1
-          cid_after="$(docker compose -f "${COMPOSE_FILE}" ps -q nginx)"
-          if [ -z "${cid_after}" ]; then
-            echo "Unable to detect nginx container id after reload."
-            exit 1
-          fi
-          if [ "${NGINX_CID_BEFORE}" != "${cid_after}" ]; then
-            echo "Container id changed after reload: ${NGINX_CID_BEFORE} -> ${cid_after}"
-            echo "Expected nginx reload without container restart."
-            exit 1
-          fi
-
-      - name: Show nginx logs on failure
+      - name: Show edge logs on failure
         if: failure()
         shell: bash
         run: |
-          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 nginx || true
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 traefik || true
 
       - name: Full cleanup
         if: always()
         shell: bash
         run: |
           docker compose -f "${COMPOSE_FILE}" down --remove-orphans --volumes || true
-          docker rm -f ava-shell-nginx || true
+          docker rm -f ava-shell-edge ava-shell-root-echo || true
 
   deploy-dev:
-    name: Deploy Nginx to Dev
-    needs: nginx-ci
+    name: Deploy Edge to Dev
+    needs: edge-ci
     if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     environment: dev-shell
     env:
@@ -234,70 +163,90 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${CF_DNS_API_TOKEN:-}" ]; then
-            echo "Missing secret: CF_DNS_API_TOKEN (Environment: dev)"
+            echo "Missing secret: CF_DNS_API_TOKEN (Environment: dev-shell)"
             exit 1
           fi
           if [ -z "${LETSENCRYPT_EMAIL:-}" ]; then
-            echo "Missing variable: LETSENCRYPT_EMAIL (Environment: dev)"
+            echo "Missing variable: LETSENCRYPT_EMAIL (Environment: dev-shell)"
             exit 1
           fi
-          mkdir -p runtime
+          mkdir -p traefik/dynamic
 
-      - name: Issue or renew certificate via certbot
+      - name: Generate deploy dynamic routes
         working-directory: nginx
         shell: bash
         run: |
           set -euo pipefail
-          printf "dns_cloudflare_api_token = %s\n" "$CF_DNS_API_TOKEN" > runtime/.cloudflare.ini
-          chmod 600 runtime/.cloudflare.ini
+          cat > traefik/dynamic/routes.generated.yml <<EOF
+          http:
+            routers:
+              root-router:
+                entryPoints: ["websecure"]
+                rule: "Host(\`${ROOT_DOMAIN}\`)"
+                service: root-service
+                tls:
+                  certResolver: cloudflare
+              auth-router:
+                entryPoints: ["websecure"]
+                rule: "Host(\`auth.${ROOT_DOMAIN}\`)"
+                service: auth-service
+                tls:
+                  certResolver: cloudflare
+            services:
+              root-service:
+                loadBalancer:
+                  servers:
+                    - url: "http://root-echo:5678"
+              auth-service:
+                loadBalancer:
+                  servers:
+                    - url: "http://auth-admin:5000"
+          EOF
 
-          docker compose --profile certbot run --rm certbot certonly \
-            --dns-cloudflare \
-            --dns-cloudflare-propagation-seconds 120 \
-            --dns-cloudflare-credentials /runtime/.cloudflare.ini \
-            --config-dir /etc/letsencrypt \
-            --work-dir /etc/letsencrypt/work \
-            --logs-dir /etc/letsencrypt/logs \
-            --email "${LETSENCRYPT_EMAIL}" \
-            --agree-tos \
-            --no-eff-email \
-            --non-interactive \
-            --keep-until-expiring \
-            -d "${ROOT_DOMAIN}" \
-            -d "*.${ROOT_DOMAIN}"
-
-      - name: Sync certificate files for nginx
-        working-directory: nginx
+      - name: Ensure ACME storage exists
         shell: bash
         run: |
           set -euo pipefail
-          docker compose --profile certbot run --rm certbot sh -c "\
-            cp /etc/letsencrypt/live/${ROOT_DOMAIN}/fullchain.pem /etc/nginx/certs/fullchain.pem && \
-            cp /etc/letsencrypt/live/${ROOT_DOMAIN}/privkey.pem /etc/nginx/certs/privkey.pem && \
-            chmod 600 /etc/nginx/certs/privkey.pem && \
-            chmod 644 /etc/nginx/certs/fullchain.pem \
-          "
+          docker volume create ava_shell_traefik_acme >/dev/null
+          docker run --rm -v ava_shell_traefik_acme:/acme alpine:3.20 \
+            sh -c "touch /acme/acme.json && chmod 600 /acme/acme.json"
 
-      - name: Deploy nginx stack
+      - name: Deploy edge stack
         working-directory: nginx
         shell: bash
         run: |
           set -euo pipefail
           docker compose up -d
-
-          # Prefer graceful config apply first.
-          if docker exec ava-shell-nginx nginx -t && docker exec ava-shell-nginx nginx -s reload; then
-            echo "Graceful reload succeeded."
-          else
-            echo "Reload path failed. Falling back to force recreate."
-            docker compose up -d --force-recreate
-            docker exec ava-shell-nginx nginx -t
-          fi
-
           docker compose ps
 
-      - name: Cleanup certbot credentials
-        if: always()
-        working-directory: nginx
+      - name: Post-deploy check (root endpoint)
         shell: bash
-        run: rm -f runtime/.cloudflare.ini
+        run: |
+          set -euo pipefail
+          ok=0
+          for i in $(seq 1 30); do
+            body="$(curl --silent --show-error -k \
+              --resolve "${ROOT_DOMAIN}:443:127.0.0.1" \
+              "https://${ROOT_DOMAIN}/" | tr -d '\r\n' || true)"
+            if [ "${body}" = "true" ]; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "${ok}" -ne 1 ]; then
+            echo "Root endpoint did not become healthy in time."
+            exit 1
+          fi
+
+      - name: Post-deploy check (auth backend unavailable -> 502/503)
+        shell: bash
+        run: |
+          set -euo pipefail
+          status_code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' -k \
+            --resolve "auth.${ROOT_DOMAIN}:443:127.0.0.1" \
+            "https://auth.${ROOT_DOMAIN}/")"
+          case "${status_code}" in
+            502|503) echo "Expected status for unavailable auth backend: ${status_code}" ;;
+            *) echo "Expected 502/503, got ${status_code}"; exit 1 ;;
+          esac
