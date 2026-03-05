@@ -44,6 +44,7 @@ jobs:
             traefik/templates/routes.ci.yml \
             traefik/dynamic/routes.generated.yml \
             "${ROOT_DOMAIN}"
+          sed -n '1,200p' traefik/dynamic/routes.generated.yml
 
       - name: Start edge stack
         shell: bash
@@ -118,6 +119,7 @@ jobs:
             traefik/templates/routes.deploy.yml \
             traefik/dynamic/routes.generated.yml \
             "${ROOT_DOMAIN}"
+          sed -n '1,200p' traefik/dynamic/routes.generated.yml
 
       - name: Ensure ACME storage exists
         shell: bash
