@@ -1,0 +1,22 @@
+http:
+  routers:
+    root-router:
+      entryPoints: ["websecure"]
+      rule: "Host(`__ROOT_DOMAIN__`)"
+      service: root-service
+      tls: {}
+    auth-router:
+      entryPoints: ["websecure"]
+      rule: "Host(`auth.__ROOT_DOMAIN__`)"
+      service: auth-service
+      tls: {}
+  services:
+    root-service:
+      loadBalancer:
+        servers:
+          - url: "http://root-echo:5678"
+    auth-service:
+      loadBalancer:
+        servers:
+          - url: "http://auth-admin:5000"
+

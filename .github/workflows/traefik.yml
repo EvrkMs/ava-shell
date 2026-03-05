@@ -3,16 +3,16 @@ name: Edge CI/CD (Traefik)
 on:
   pull_request:
     paths:
-      - "nginx/docker-compose.yml"
-      - "nginx/traefik/**"
-      - ".github/workflows/nginx.yml"
+      - "traefik/docker-compose.yml"
+      - "traefik/dynamic/**"
+      - ".github/workflows/traefik.yml"
   push:
     branches:
       - master
     paths:
-      - "nginx/docker-compose.yml"
-      - "nginx/traefik/**"
-      - ".github/workflows/nginx.yml"
+      - "traefik/docker-compose.yml"
+      - "traefik/dynamic/**"
+      - ".github/workflows/traefik.yml"
   workflow_dispatch:
 
 concurrency:
@@ -26,39 +26,18 @@ jobs:
       - label-ci
     env:
       ROOT_DOMAIN: ${{ vars.ROOT_DOMAIN || vars['root-domain'] || 'ava-shell.ru' }}
-      COMPOSE_FILE: ${{ github.workspace }}/nginx/docker-compose.yml
+      COMPOSE_FILE: ${{ github.workspace }}/traefik/docker-compose.yml
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Generate CI dynamic routes
+      - name: Generate CI routes from template
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p nginx/traefik/dynamic
-          cat > nginx/traefik/dynamic/routes.generated.yml <<EOF
-          http:
-            routers:
-              root-router:
-                entryPoints: ["websecure"]
-                rule: "Host(\`${ROOT_DOMAIN}\`)"
-                service: root-service
-                tls: {}
-              auth-router:
-                entryPoints: ["websecure"]
-                rule: "Host(\`auth.${ROOT_DOMAIN}\`)"
-                service: auth-service
-                tls: {}
-            services:
-              root-service:
-                loadBalancer:
-                  servers:
-                    - url: "http://root-echo:5678"
-              auth-service:
-                loadBalancer:
-                  servers:
-                    - url: "http://auth-admin:5000"
-          EOF
+          mkdir -p traefik/dynamic
+          sed "s/__ROOT_DOMAIN__/${ROOT_DOMAIN}/g" \
+            traefik/dynamic/routes.ci.yml > traefik/dynamic/routes.generated.yml
 
       - name: Start edge stack
         shell: bash
@@ -143,7 +122,7 @@ jobs:
           docker rm -f ava-shell-edge ava-shell-root-echo || true
 
   deploy-dev:
-    name: Deploy Edge to Dev
+    name: Deploy Traefik Edge to Dev
     needs: edge-ci
     if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     environment: dev-shell
@@ -158,7 +137,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate deploy env
-        working-directory: nginx
+        working-directory: traefik
         shell: bash
         run: |
           set -euo pipefail
@@ -170,38 +149,15 @@ jobs:
             echo "Missing variable: LETSENCRYPT_EMAIL (Environment: dev-shell)"
             exit 1
           fi
-          mkdir -p traefik/dynamic
+          mkdir -p dynamic
 
-      - name: Generate deploy dynamic routes
-        working-directory: nginx
+      - name: Generate deploy routes from template
+        working-directory: traefik
         shell: bash
         run: |
           set -euo pipefail
-          cat > traefik/dynamic/routes.generated.yml <<EOF
-          http:
-            routers:
-              root-router:
-                entryPoints: ["websecure"]
-                rule: "Host(\`${ROOT_DOMAIN}\`)"
-                service: root-service
-                tls:
-                  certResolver: cloudflare
-              auth-router:
-                entryPoints: ["websecure"]
-                rule: "Host(\`auth.${ROOT_DOMAIN}\`)"
-                service: auth-service
-                tls:
-                  certResolver: cloudflare
-            services:
-              root-service:
-                loadBalancer:
-                  servers:
-                    - url: "http://root-echo:5678"
-              auth-service:
-                loadBalancer:
-                  servers:
-                    - url: "http://auth-admin:5000"
-          EOF
+          sed "s/__ROOT_DOMAIN__/${ROOT_DOMAIN}/g" \
+            dynamic/routes.deploy.yml > dynamic/routes.generated.yml
 
       - name: Ensure ACME storage exists
         shell: bash
@@ -212,7 +168,7 @@ jobs:
             sh -c "touch /acme/acme.json && chmod 600 /acme/acme.json"
 
       - name: Deploy edge stack
-        working-directory: nginx
+        working-directory: traefik
         shell: bash
         run: |
           set -euo pipefail

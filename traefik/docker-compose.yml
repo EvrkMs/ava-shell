@@ -1,5 +1,5 @@
 services:
-  traefik:
+  edge:
     image: traefik:v3.2
     container_name: ava-shell-edge
     restart: unless-stopped
@@ -24,7 +24,7 @@ services:
       - --certificatesresolvers.cloudflare.acme.dnschallenge.delaybeforecheck=30
       - --certificatesresolvers.cloudflare.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53
     volumes:
-      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
       - ava_shell_traefik_acme:/etc/traefik/acme
     networks:
       - edge
@@ -44,3 +44,4 @@ volumes:
 networks:
   edge:
     name: ava-shell-edge
+
