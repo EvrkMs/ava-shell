@@ -29,6 +29,7 @@ jobs:
     env:
       ROOT_DOMAIN: ${{ vars.ROOT_DOMAIN || vars['root-domain'] || 'ava-shell.ru' }}
       COMPOSE_FILE: ${{ github.workspace }}/traefik/docker-compose.yml
+      COMPOSE_PROJECT_NAME: ava_shell_edge
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -114,14 +115,13 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 traefik || true
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 edge || true
 
       - name: Full cleanup
         if: always()
         shell: bash
         run: |
           docker compose -f "${COMPOSE_FILE}" down --remove-orphans --volumes || true
-          docker rm -f ava-shell-edge ava-shell-root-echo || true
 
   deploy-dev:
     name: Deploy Traefik Edge to Dev
@@ -132,6 +132,7 @@ jobs:
       ROOT_DOMAIN: ${{ vars.ROOT_DOMAIN || vars['root-domain'] || 'ava-shell.ru' }}
       LETSENCRYPT_EMAIL: ${{ vars.LETSENCRYPT_EMAIL }}
       CF_DNS_API_TOKEN: ${{ secrets.CF_DNS_API_TOKEN }}
+      COMPOSE_PROJECT_NAME: ava_shell_edge
     runs-on:
       - label-dev
     steps:
@@ -175,7 +176,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker compose up -d
+          # Prefer soft update: Traefik watches dynamic config and reloads routes automatically.
+          if docker compose up -d; then
+            echo "Soft deploy succeeded."
+          else
+            echo "Soft deploy failed. Fallback to conflict recovery + force recreate."
+            docker compose down --remove-orphans || true
+            docker rm -f ava-shell-edge ava-shell-root-echo || true
+            docker compose up -d --force-recreate
+          fi
           docker compose ps
 
       - name: Post-deploy check (root endpoint)
