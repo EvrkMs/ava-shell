@@ -6,6 +6,7 @@ if [ "$#" -ne 1 ]; then
   exit 1
 fi
 
+
 output_cfg="$1"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 template_path="${repo_root}/database/haproxy/haproxy.cfg.tmpl"
