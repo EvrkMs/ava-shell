@@ -107,42 +107,13 @@ jobs:
             local name="$1"
             local role="$2"
             docker rm -f "${name}" >/dev/null 2>&1 || true
-            docker run -d --name "${name}" --network "${MOCK_NETWORK}" -e ROLE="${role}" python:3.12-alpine sh -c '
-              python - << "PY"
-import os
-import socket
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-role = os.environ.get("ROLE", "replica")
-
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/primary" and role == "primary":
-            self.send_response(200)
-        else:
-            self.send_response(503)
-        self.end_headers()
-    def log_message(self, fmt, *args):
-        return
-
-def run_http():
-    HTTPServer(("0.0.0.0", 8008), Handler).serve_forever()
-
-def run_tcp():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("0.0.0.0", 5432))
-    sock.listen(128)
-    while True:
-        conn, _ = sock.accept()
-        conn.sendall((role + "\\n").encode("utf-8"))
-        conn.close()
-
-threading.Thread(target=run_http, daemon=True).start()
-run_tcp()
-PY
-            '
+            docker run -d \
+              --name "${name}" \
+              --network "${MOCK_NETWORK}" \
+              -e ROLE="${role}" \
+              -v "${GITHUB_WORKSPACE}/scripts/db/mock_patroni_node.py:/opt/mock_patroni_node.py:ro" \
+              python:3.12-alpine \
+              python /opt/mock_patroni_node.py
           }
 
           run_mock_node pg-primary primary
@@ -163,29 +134,12 @@ PY
       - name: Validate routing goes to primary
         shell: bash
         run: |
-          python - << "PY"
-import os
-import socket
-import time
-
-port = int(os.environ.get("MOCK_PROXY_PORT", "15433"))
-target = ("127.0.0.1", port)
-last = None
-for _ in range(30):
-    try:
-        s = socket.create_connection(target, timeout=1.0)
-        data = s.recv(64).decode("utf-8").strip()
-        s.close()
-        last = data
-        if data == "primary":
-            print("HAProxy routed to primary as expected")
-            raise SystemExit(0)
-    except Exception as ex:
-        last = str(ex)
-    time.sleep(1)
-
-raise SystemExit(f"Expected 'primary' from backend, got: {last}")
-PY
+          docker run --rm \
+            --network host \
+            -e MOCK_PROXY_PORT="${MOCK_PROXY_PORT}" \
+            -v "${GITHUB_WORKSPACE}:/workspace:ro" \
+            python:3.12-alpine \
+            python /workspace/scripts/db/check_haproxy_primary.py
 
       - name: Show mock logs on failure
         if: failure()
