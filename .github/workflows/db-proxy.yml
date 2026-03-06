@@ -1,0 +1,130 @@
+name: DB Proxy CI/CD (HAProxy)
+
+on:
+  pull_request:
+    paths:
+      - "database/**"
+      - "scripts/db/**"
+      - ".github/workflows/db-proxy.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "database/**"
+      - "scripts/db/**"
+      - ".github/workflows/db-proxy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: db-proxy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  db-proxy-ci:
+    name: Validate DB Proxy
+    runs-on:
+      - label-ci
+    env:
+      COMPOSE_FILE: ${{ github.workspace }}/database/docker-compose.yml
+      COMPOSE_PROJECT_NAME: ava_shell_db_proxy
+      DB_BACKENDS: "127.0.0.1:5432"
+      DB_PROXY_PORT: "15432"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate DB_BACKENDS
+        shell: bash
+        run: |
+          bash scripts/db/validate-db-backends.sh "${DB_BACKENDS}"
+
+      - name: Render HAProxy config
+        shell: bash
+        run: |
+          bash scripts/db/render-haproxy-cfg.sh database/haproxy/haproxy.cfg
+          sed -n '1,200p' database/haproxy/haproxy.cfg
+
+      - name: Validate HAProxy config syntax
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/database/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+            haproxy:3.0-alpine \
+            haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+      - name: Start DB proxy stack
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" up -d --force-recreate
+          docker compose -f "${COMPOSE_FILE}" ps
+
+      - name: Validate config in running container
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" exec -T db-proxy \
+            haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+      - name: Show logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 db-proxy || true
+
+      - name: Full cleanup
+        if: always()
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" down --remove-orphans --volumes || true
+
+  deploy-dev:
+    name: Deploy DB Proxy to Dev
+    needs: db-proxy-ci
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    environment: dev-shell
+    runs-on:
+      - label-dev
+    env:
+      COMPOSE_FILE: ${{ github.workspace }}/database/docker-compose.yml
+      COMPOSE_PROJECT_NAME: ava_shell_db_proxy
+      DB_BACKENDS: ${{ vars.DB_BACKENDS }}
+      DB_PROXY_PORT: "5432"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate DB_BACKENDS
+        shell: bash
+        run: |
+          bash scripts/db/validate-db-backends.sh "${DB_BACKENDS}"
+
+      - name: Render HAProxy config
+        shell: bash
+        run: |
+          bash scripts/db/render-haproxy-cfg.sh database/haproxy/haproxy.cfg
+          sed -n '1,200p' database/haproxy/haproxy.cfg
+
+      - name: Validate HAProxy config syntax
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/database/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+            haproxy:3.0-alpine \
+            haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+      - name: Deploy DB proxy stack
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" up -d
+          docker compose -f "${COMPOSE_FILE}" ps
+
+      - name: Validate config in running container
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" exec -T db-proxy \
+            haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+      - name: Show logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 db-proxy || true
