@@ -18,6 +18,8 @@
 Backend-узлы задаются переменной:
 
 - `DB_BACKENDS=10.0.0.11:5432,10.0.0.12:5432,10.0.0.13:5432`
+- `HAPROXY_HEALTH_MODE=tcp` (по умолчанию) или `patroni-api`
+- для `patroni-api`: `PATRONI_API_PORT=8008`, `PATRONI_CHECK_PATH=/primary`
 
 Рендер:
 
@@ -42,3 +44,9 @@ Workflow: `.github/workflows/db-proxy.yml`
 - `.github/workflows/db-proxy.yml`
 
 Для `deploy-dev` требуется переменная окружения `DB_BACKENDS` в `Environment: dev-shell`.
+
+В `CI` есть отдельный job `Validate Patroni API Checks (Mock)`:
+
+- поднимает mock-ноды `primary/replica`;
+- рендерит конфиг в режиме `patroni-api`;
+- проверяет, что HAProxy маршрутизирует трафик только в `primary`.

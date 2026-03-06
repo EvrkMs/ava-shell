@@ -16,5 +16,5 @@ frontend postgres_rw
 
 backend postgres_rw_backends
   balance first
-  option tcp-check
+__HEALTHCHECK_BLOCK__
 __BACKEND_SERVERS__

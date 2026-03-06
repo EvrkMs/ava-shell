@@ -15,6 +15,7 @@
 - `database/docker-compose.yml` (только HAProxy);
 - `database/haproxy/haproxy.cfg.tmpl`;
 - `scripts/db/render-haproxy-cfg.sh`.
+- `scripts/db/validate-db-backends.sh`.
 
 ## Что хранится вне репозитория
 
