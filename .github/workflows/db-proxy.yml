@@ -134,7 +134,12 @@ jobs:
       - name: Validate routing goes to primary
         shell: bash
         run: |
-          python scripts/db/check_haproxy_primary.py
+          docker run --rm \
+            --network host \
+            -e MOCK_PROXY_PORT="${MOCK_PROXY_PORT}" \
+            -v "${GITHUB_WORKSPACE}:/workspace:ro" \
+            python:3.12-alpine \
+            python /workspace/scripts/db/check_haproxy_primary.py
 
       - name: Show mock logs on failure
         if: failure()
