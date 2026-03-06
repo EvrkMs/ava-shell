@@ -1,0 +1,258 @@
+name: DB Proxy CI/CD (HAProxy)
+
+on:
+  pull_request:
+    paths:
+      - "database/**"
+      - "scripts/db/**"
+      - ".github/workflows/db-proxy.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "database/**"
+      - "scripts/db/**"
+      - ".github/workflows/db-proxy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: db-proxy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  db-proxy-ci:
+    name: Validate DB Proxy
+    runs-on:
+      - label-ci
+    env:
+      COMPOSE_FILE: ${{ github.workspace }}/database/docker-compose.yml
+      COMPOSE_PROJECT_NAME: ava_shell_db_proxy
+      DB_BACKENDS: "127.0.0.1:5432"
+      DB_PROXY_PORT: "15432"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate DB_BACKENDS
+        shell: bash
+        run: |
+          bash scripts/db/validate-db-backends.sh "${DB_BACKENDS}"
+
+      - name: Render HAProxy config
+        shell: bash
+        run: |
+          bash scripts/db/render-haproxy-cfg.sh database/haproxy/haproxy.cfg
+          sed -n '1,200p' database/haproxy/haproxy.cfg
+
+      - name: Validate HAProxy config syntax
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/database/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+            haproxy:3.0-alpine \
+            haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+      - name: Start DB proxy stack
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" up -d --force-recreate
+          docker compose -f "${COMPOSE_FILE}" ps
+
+      - name: Validate config in running container
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" exec -T db-proxy \
+            haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+      - name: Show logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 db-proxy || true
+
+      - name: Full cleanup
+        if: always()
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" down --remove-orphans --volumes || true
+
+  patroni-api-mock-ci:
+    name: Validate Patroni API Checks (Mock)
+    runs-on:
+      - label-ci
+    env:
+      MOCK_NETWORK: ava-shell-db-proxy-mock
+      HAPROXY_HEALTH_MODE: patroni-api
+      DB_BACKENDS: "pg-primary:5432,pg-replica:5432"
+      PATRONI_API_PORT: "8008"
+      PATRONI_CHECK_PATH: "/primary"
+      MOCK_PROXY_PORT: "15433"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Render HAProxy config (patroni-api mode)
+        shell: bash
+        run: |
+          bash scripts/db/render-haproxy-cfg.sh database/haproxy/haproxy.cfg
+          sed -n '1,220p' database/haproxy/haproxy.cfg
+
+      - name: Start mock Patroni nodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker network create "${MOCK_NETWORK}" >/dev/null 2>&1 || true
+
+          run_mock_node() {
+            local name="$1"
+            local role="$2"
+            docker rm -f "${name}" >/dev/null 2>&1 || true
+            docker run -d --name "${name}" --network "${MOCK_NETWORK}" -e ROLE="${role}" python:3.12-alpine sh -c '
+              python - << "PY"
+import os
+import socket
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+role = os.environ.get("ROLE", "replica")
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/primary" and role == "primary":
+            self.send_response(200)
+        else:
+            self.send_response(503)
+        self.end_headers()
+    def log_message(self, fmt, *args):
+        return
+
+def run_http():
+    HTTPServer(("0.0.0.0", 8008), Handler).serve_forever()
+
+def run_tcp():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", 5432))
+    sock.listen(128)
+    while True:
+        conn, _ = sock.accept()
+        conn.sendall((role + "\\n").encode("utf-8"))
+        conn.close()
+
+threading.Thread(target=run_http, daemon=True).start()
+run_tcp()
+PY
+            '
+          }
+
+          run_mock_node pg-primary primary
+          run_mock_node pg-replica replica
+
+      - name: Start HAProxy with rendered config
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker rm -f db-proxy-mock >/dev/null 2>&1 || true
+          docker run -d \
+            --name db-proxy-mock \
+            --network "${MOCK_NETWORK}" \
+            -p "${MOCK_PROXY_PORT}:5432" \
+            -v "${GITHUB_WORKSPACE}/database/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+            haproxy:3.0-alpine
+
+      - name: Validate routing goes to primary
+        shell: bash
+        run: |
+          python - << "PY"
+import os
+import socket
+import time
+
+port = int(os.environ.get("MOCK_PROXY_PORT", "15433"))
+target = ("127.0.0.1", port)
+last = None
+for _ in range(30):
+    try:
+        s = socket.create_connection(target, timeout=1.0)
+        data = s.recv(64).decode("utf-8").strip()
+        s.close()
+        last = data
+        if data == "primary":
+            print("HAProxy routed to primary as expected")
+            raise SystemExit(0)
+    except Exception as ex:
+        last = str(ex)
+    time.sleep(1)
+
+raise SystemExit(f"Expected 'primary' from backend, got: {last}")
+PY
+
+      - name: Show mock logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker logs db-proxy-mock --tail 200 || true
+          docker logs pg-primary --tail 100 || true
+          docker logs pg-replica --tail 100 || true
+
+      - name: Cleanup mock environment
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f db-proxy-mock pg-primary pg-replica >/dev/null 2>&1 || true
+          docker network rm "${MOCK_NETWORK}" >/dev/null 2>&1 || true
+
+  deploy-dev:
+    name: Deploy DB Proxy to Dev
+    needs:
+      - db-proxy-ci
+      - patroni-api-mock-ci
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    environment: dev-shell
+    runs-on:
+      - label-dev
+    env:
+      COMPOSE_FILE: ${{ github.workspace }}/database/docker-compose.yml
+      COMPOSE_PROJECT_NAME: ava_shell_db_proxy
+      DB_BACKENDS: ${{ vars.DB_BACKENDS }}
+      DB_PROXY_PORT: "5432"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate DB_BACKENDS
+        shell: bash
+        run: |
+          bash scripts/db/validate-db-backends.sh "${DB_BACKENDS}"
+
+      - name: Render HAProxy config
+        shell: bash
+        run: |
+          bash scripts/db/render-haproxy-cfg.sh database/haproxy/haproxy.cfg
+          sed -n '1,200p' database/haproxy/haproxy.cfg
+
+      - name: Validate HAProxy config syntax
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/database/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+            haproxy:3.0-alpine \
+            haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+      - name: Deploy DB proxy stack
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" up -d
+          docker compose -f "${COMPOSE_FILE}" ps
+
+      - name: Validate config in running container
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" exec -T db-proxy \
+            haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+      - name: Show logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 db-proxy || true

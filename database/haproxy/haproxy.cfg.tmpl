@@ -1,0 +1,20 @@
+global
+  log stdout format raw local0
+  maxconn 2000
+
+defaults
+  log global
+  mode tcp
+  option tcplog
+  timeout connect 5s
+  timeout client 60s
+  timeout server 60s
+
+frontend postgres_rw
+  bind *:5432
+  default_backend postgres_rw_backends
+
+backend postgres_rw_backends
+  balance first
+__HEALTHCHECK_BLOCK__
+__BACKEND_SERVERS__
