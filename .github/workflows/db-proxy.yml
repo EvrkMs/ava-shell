@@ -196,7 +196,7 @@ jobs:
       COMPOSE_FILE: ${{ github.workspace }}/database/docker-compose.yml
       COMPOSE_PROJECT_NAME: ava_shell_db_proxy
       DB_BACKENDS: ${{ vars.DB_BACKENDS }}
-      DB_PROXY_PORT: "5432"
+      DB_PROXY_PORT: ${{ vars.DB_PROXY_PORT }}
       DB_NAMES: ${{ vars.DB_NAMES }}
       PGBOUNCER_AUTH_USER: ${{ secrets.PGBOUNCER_AUTH_USER }}
       PGBOUNCER_AUTH_PASSWORD: ${{ secrets.PGBOUNCER_AUTH_PASSWORD }}
