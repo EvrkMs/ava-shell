@@ -39,24 +39,19 @@ md5_hash="$(printf '%s' "${auth_password}${auth_user}" | md5sum | awk '{print $1
 mkdir -p "$(dirname "${output_ini}")"
 mkdir -p "$(dirname "${output_userlist}")"
 
-python3 - <<'PY' "${template_path}" "${output_ini}" "${database_mappings}" "${auth_user}" "${auth_dbname}" "${auth_query}"
-from pathlib import Path
-import sys
-
-template_path = Path(sys.argv[1])
-output_path = Path(sys.argv[2])
-database_mappings = sys.argv[3]
-auth_user = sys.argv[4]
-auth_dbname = sys.argv[5]
-auth_query = sys.argv[6]
-
-content = template_path.read_text(encoding="utf-8")
-content = content.replace("__DATABASE_MAPPINGS__", database_mappings.rstrip("\n"))
-content = content.replace("__PGBOUNCER_AUTH_USER__", auth_user)
-content = content.replace("__PGBOUNCER_AUTH_DBNAME__", auth_dbname)
-content = content.replace("__PGBOUNCER_AUTH_QUERY__", auth_query)
-output_path.write_text(content, encoding="utf-8")
-PY
+awk \
+  -v database_mappings="${database_mappings%$'\n'}" \
+  -v auth_user="${auth_user}" \
+  -v auth_dbname="${auth_dbname}" \
+  -v auth_query="${auth_query}" '
+    {
+      gsub(/__DATABASE_MAPPINGS__/, database_mappings);
+      gsub(/__PGBOUNCER_AUTH_USER__/, auth_user);
+      gsub(/__PGBOUNCER_AUTH_DBNAME__/, auth_dbname);
+      gsub(/__PGBOUNCER_AUTH_QUERY__/, auth_query);
+      print;
+    }
+  ' "${template_path}" > "${output_ini}"
 
 printf '"%s" "md5%s"\n' "${auth_user}" "${md5_hash}" > "${output_userlist}"
 
