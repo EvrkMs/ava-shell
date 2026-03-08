@@ -3,12 +3,28 @@ services:
     image: haproxy:3.0-alpine
     container_name: ava-shell-db-proxy
     restart: unless-stopped
-    ports:
-      - "${DB_PROXY_PORT:-5432}:5432"
+    expose:
+      - "15432"
     volumes:
       - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks:
       - db-edge
+
+  db-entry:
+    image: edoburu/pgbouncer:1.24.1-p1
+    container_name: ava-shell-db-entry
+    restart: unless-stopped
+    depends_on:
+      - db-proxy
+    ports:
+      - "${DB_PROXY_PORT:-5432}:5432"
+    volumes:
+      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    networks:
+      db-edge:
+        aliases:
+          - db-rw.internal
 
 networks:
   db-edge:

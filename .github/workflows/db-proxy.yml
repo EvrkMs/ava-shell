@@ -1,4 +1,4 @@
-name: DB Proxy CI/CD (HAProxy)
+name: DB Entry CI/CD (PgBouncer + HAProxy)
 
 on:
   pull_request:
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   db-proxy-ci:
-    name: Validate DB Proxy
+    name: Validate DB Entry
     runs-on:
       - label-ci
     env:
@@ -29,6 +29,11 @@ jobs:
       COMPOSE_PROJECT_NAME: ava_shell_db_proxy
       DB_BACKENDS: "127.0.0.1:5432"
       DB_PROXY_PORT: "15432"
+      DB_NAMES: "AUTH"
+      DB_NAME_AUTH: "ava_auth"
+      PGBOUNCER_AUTH_USER: "pgbouncer_auth"
+      PGBOUNCER_AUTH_PASSWORD: "pgbouncer_auth_dev"
+      PGBOUNCER_AUTH_DBNAME: "ava_auth"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,11 +43,24 @@ jobs:
         run: |
           bash scripts/db/validate-db-backends.sh "${DB_BACKENDS}"
 
+      - name: Validate PgBouncer env
+        shell: bash
+        run: |
+          bash scripts/db/validate-pgbouncer-env.sh
+
       - name: Render HAProxy config
         shell: bash
         run: |
           bash scripts/db/render-haproxy-cfg.sh database/haproxy/haproxy.cfg
           sed -n '1,200p' database/haproxy/haproxy.cfg
+
+      - name: Render PgBouncer config
+        shell: bash
+        run: |
+          bash scripts/db/render-pgbouncer-config.sh \
+            database/pgbouncer/pgbouncer.ini \
+            database/pgbouncer/userlist.txt
+          sed -n '1,200p' database/pgbouncer/pgbouncer.ini
 
       - name: Validate HAProxy config syntax
         shell: bash
@@ -52,23 +70,32 @@ jobs:
             haproxy:3.0-alpine \
             haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
 
-      - name: Start DB proxy stack
+      - name: Start DB entry stack
         shell: bash
         run: |
           docker compose -f "${COMPOSE_FILE}" up -d --force-recreate
           docker compose -f "${COMPOSE_FILE}" ps
 
-      - name: Validate config in running container
+      - name: Validate HAProxy config in running container
         shell: bash
         run: |
           docker compose -f "${COMPOSE_FILE}" exec -T db-proxy \
             haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+      - name: Validate PgBouncer config files in running container
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" exec -T db-entry sh -lc '
+            test -f /etc/pgbouncer/pgbouncer.ini &&
+            test -f /etc/pgbouncer/userlist.txt
+          '
 
       - name: Show logs on failure
         if: failure()
         shell: bash
         run: |
           docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 db-proxy || true
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 db-entry || true
 
       - name: Full cleanup
         if: always()
@@ -127,7 +154,7 @@ jobs:
           docker run -d \
             --name db-proxy-mock \
             --network "${MOCK_NETWORK}" \
-            -p "${MOCK_PROXY_PORT}:5432" \
+            -p "${MOCK_PROXY_PORT}:15432" \
             -v "${GITHUB_WORKSPACE}/database/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
             haproxy:3.0-alpine
 
@@ -157,7 +184,7 @@ jobs:
           docker network rm "${MOCK_NETWORK}" >/dev/null 2>&1 || true
 
   deploy-dev:
-    name: Deploy DB Proxy to Dev
+    name: Deploy DB Entry to Dev
     needs:
       - db-proxy-ci
       - patroni-api-mock-ci
@@ -170,20 +197,50 @@ jobs:
       COMPOSE_PROJECT_NAME: ava_shell_db_proxy
       DB_BACKENDS: ${{ vars.DB_BACKENDS }}
       DB_PROXY_PORT: "5432"
+      DB_NAMES: ${{ vars.DB_NAMES }}
+      PGBOUNCER_AUTH_USER: ${{ vars.PGBOUNCER_AUTH_USER }}
+      PGBOUNCER_AUTH_PASSWORD: ${{ secrets.PGBOUNCER_AUTH_PASSWORD }}
+      PGBOUNCER_AUTH_DBNAME: ${{ vars.PGBOUNCER_AUTH_DBNAME }}
+      GITHUB_VARS_JSON: ${{ toJson(vars) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Export DB_NAME_* variables
+        shell: bash
+        run: |
+          docker run --rm \
+            -e DB_NAMES="${DB_NAMES}" \
+            -e GITHUB_VARS_JSON="${GITHUB_VARS_JSON}" \
+            -e GITHUB_ENV=/github_env \
+            -v "${GITHUB_ENV}:/github_env" \
+            -v "${GITHUB_WORKSPACE}:/workspace:ro" \
+            python:3.12-alpine \
+            python /workspace/scripts/db/export_db_name_vars.py
 
       - name: Validate DB_BACKENDS
         shell: bash
         run: |
           bash scripts/db/validate-db-backends.sh "${DB_BACKENDS}"
 
+      - name: Validate PgBouncer env
+        shell: bash
+        run: |
+          bash scripts/db/validate-pgbouncer-env.sh
+
       - name: Render HAProxy config
         shell: bash
         run: |
           bash scripts/db/render-haproxy-cfg.sh database/haproxy/haproxy.cfg
           sed -n '1,200p' database/haproxy/haproxy.cfg
+
+      - name: Render PgBouncer config
+        shell: bash
+        run: |
+          bash scripts/db/render-pgbouncer-config.sh \
+            database/pgbouncer/pgbouncer.ini \
+            database/pgbouncer/userlist.txt
+          sed -n '1,200p' database/pgbouncer/pgbouncer.ini
 
       - name: Validate HAProxy config syntax
         shell: bash
@@ -193,20 +250,29 @@ jobs:
             haproxy:3.0-alpine \
             haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
 
-      - name: Deploy DB proxy stack
+      - name: Deploy DB entry stack
         shell: bash
         run: |
           docker compose -f "${COMPOSE_FILE}" up -d
           docker compose -f "${COMPOSE_FILE}" ps
 
-      - name: Validate config in running container
+      - name: Validate HAProxy config in running container
         shell: bash
         run: |
           docker compose -f "${COMPOSE_FILE}" exec -T db-proxy \
             haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+
+      - name: Validate PgBouncer config files in running container
+        shell: bash
+        run: |
+          docker compose -f "${COMPOSE_FILE}" exec -T db-entry sh -lc '
+            test -f /etc/pgbouncer/pgbouncer.ini &&
+            test -f /etc/pgbouncer/userlist.txt
+          '
 
       - name: Show logs on failure
         if: failure()
         shell: bash
         run: |
           docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 db-proxy || true
+          docker compose -f "${COMPOSE_FILE}" logs --no-color --tail=200 db-entry || true

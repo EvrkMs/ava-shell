@@ -1,0 +1,21 @@
+[databases]
+__DATABASE_MAPPINGS__
+
+[pgbouncer]
+listen_addr = 0.0.0.0
+listen_port = 5432
+auth_type = md5
+auth_file = /etc/pgbouncer/userlist.txt
+auth_user = __PGBOUNCER_AUTH_USER__
+auth_dbname = __PGBOUNCER_AUTH_DBNAME__
+auth_query = __PGBOUNCER_AUTH_QUERY__
+admin_users = __PGBOUNCER_AUTH_USER__
+pool_mode = transaction
+max_client_conn = 1000
+default_pool_size = 50
+reserve_pool_size = 10
+reserve_pool_timeout = 3
+server_reset_query = DISCARD ALL
+ignore_startup_parameters = extra_float_digits,search_path
+log_connections = 1
+log_disconnections = 1
