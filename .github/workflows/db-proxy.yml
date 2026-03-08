@@ -198,7 +198,7 @@ jobs:
       DB_BACKENDS: ${{ vars.DB_BACKENDS }}
       DB_PROXY_PORT: "5432"
       DB_NAMES: ${{ vars.DB_NAMES }}
-      PGBOUNCER_AUTH_USER: ${{ vars.PGBOUNCER_AUTH_USER }}
+      PGBOUNCER_AUTH_USER: ${{ secrets.PGBOUNCER_AUTH_USER }}
       PGBOUNCER_AUTH_PASSWORD: ${{ secrets.PGBOUNCER_AUTH_PASSWORD }}
       PGBOUNCER_AUTH_DBNAME: ${{ vars.PGBOUNCER_AUTH_DBNAME }}
       GITHUB_VARS_JSON: ${{ toJson(vars) }}
